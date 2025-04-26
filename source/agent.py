@@ -120,7 +120,8 @@ class PPO:
         # ======================================================================
 
         with torch.no_grad(): # Value predictions used for targets/advantages shouldn't have gradients
-            values = self.value(states).squeeze() # Values for states s_t: V(s_0), V(s_1), ..., V(s_{T-1})
+            # values = self.value(states).squeeze() # Values for states s_t: V(s_0), V(s_1), ..., V(s_{T-1})
+            values = self.value(states).view(-1)
             # Value for the final next state s_T
             # If episode was 'done', the value of the terminal state is 0.
             # In this env, done is always True at the end of an episode.

@@ -12,7 +12,7 @@ import sys # For checking exit status
 # Import modules
 import config
 from data_handler import load_and_split_data
-from environment import FactorEnv
+from environment import FactorEnv 
 from agent import PPO
 from evaluation import evaluate_factor_on_split
 from plotting import plot_training_results
@@ -47,8 +47,10 @@ def run_training():
          return
 
     # Calculate action dimension based on config
-    action_dim = len(config.FEATURES) + len(config.CONSTANTS) + len(config.OPERATORS)
-
+    # action_dim = len(config.FEATURES) + len(config.CONSTANTS) + len(config.OPERATORS)
+    # --- FIX: Use action_dim directly from the environment instance ---
+    action_dim = train_env.action_dim # Get action dim (including STOP) from env
+    print(f"Action Dimension (including STOP action): {action_dim}")
     # Initialize PPO Agent
     ppo = PPO(state_dim=config.STATE_DIM, action_dim=action_dim)
 

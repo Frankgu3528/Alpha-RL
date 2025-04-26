@@ -48,7 +48,7 @@ OPERATORS = ['+', '-', '*', '/', 'log', 'exp', 'sqrt', 'abs', '**2']
 CONSTANTS = [0.1, 0.5, 1.0, 2.0, 5.0, 10.0, -0.1, -0.5, -1.0, -2.0] # Added NaN as a constant
 
 # --- Environment Configuration ---
-MAX_DEPTH = 5
+MAX_DEPTH = 10
 MAX_OPERATIONS = 15
 
 # --- Agent Configuration (PPO) ---

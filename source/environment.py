@@ -1,20 +1,17 @@
 # environment.py
-"""
-Defines the Reinforcement Learning environment for factor discovery.
-"""
 import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 import warnings
 
-# Import necessary components from other modules
 from utils import safe_log, safe_exp, safe_div, safe_sqrt, safe_power2, normalize_series, handle_inf_nan
+# Import config variables needed within the class
 from config import FEATURES, OPERATORS, CONSTANTS, MAX_DEPTH, MAX_OPERATIONS, EVAL_MIN_POINTS
 
 class FactorEnv:
     """
     RL Environment for building and evaluating factor expressions.
-    Operates on a specific subset of data (train, val, or test).
+    Includes a STOP action for dynamic termination.
     """
     def __init__(self, data_subset):
         if data_subset is None or data_subset.empty:
@@ -25,17 +22,17 @@ class FactorEnv:
         self.features = FEATURES
         self.operators = OPERATORS
         self.constants = CONSTANTS
-        self.action_dim = len(self.features) + len(self.constants) + len(self.operators)
+        self.num_build_actions = len(self.features) + len(self.constants) + len(self.operators)
+        self.stop_action_index = self.num_build_actions # Index for the new STOP action
+        self.action_dim = self.num_build_actions + 1    # Total actions including STOP
 
         if 'Return' not in self.data.columns:
              raise ValueError("The data_subset provided to FactorEnv must contain a 'Return' column.")
-        # Pre-calculate returns as numpy array for faster access in reward calculation
         self.returns_np = self.data['Return'].values
-
         self.reset()
 
     def reset(self):
-        """Resets the environment to start building a new expression."""
+        """Resets the environment."""
         self.tree = None
         self.current_depth = 0
         self.done = False
@@ -43,129 +40,123 @@ class FactorEnv:
         return self.get_state()
 
     def get_state(self):
-        """Returns the current state of the environment."""
+        """Returns the current state."""
+        # Keep the state representation simple for now
         if self.tree is None:
-            # depth, tree_exists (0=No), normalized_ops_count
             return [0, 0, 0]
         else:
-            # State: normalized_depth, tree_exists (1=Yes), normalized_ops_count
             norm_depth = self.current_depth / self.max_depth
             norm_ops = self.operations_count / self.max_operations
-            return [min(norm_depth, 1.0), 1, min(norm_ops, 1.0)] # Keep state normalized
+            # Ensure state values are within reasonable bounds for the network
+            return [min(norm_depth, 1.0), 1, min(norm_ops, 1.0)]
 
     def step(self, action):
-        """Performs one step in the environment based on the agent's action."""
-        reward = 0
-        op_applied = False
+        """Performs one step, handling build actions and the STOP action."""
+        reward = 0 # Intermediate rewards are 0
+        op_applied = False # Track if a build operation occurred
 
-        total_features = len(self.features)
-        total_constants = len(self.constants)
-        total_operators = len(self.operators)
+        # --- Check for STOP action ---
+        if action == self.stop_action_index:
+            if self.tree is None:
+                # Penalize stopping with an empty tree
+                reward = -0.5
+                self.tree = np.random.choice(self.features) # Create a minimal tree for eval? Or just penalize.
+                warnings.warn("Agent chose STOP with an empty tree.")
+            else:
+                # Agent chose to stop, calculate final reward based on current tree
+                reward = self._calculate_final_reward()
+            self.done = True
+            return self.get_state(), float(reward), self.done
+        # --- End STOP action check ---
 
-        if not (0 <= action < self.action_dim):
-             warnings.warn(f"Invalid action received: {action}. Assigning penalty.")
-             reward = -0.2
-             self.done = True # Terminate if action is fundamentally wrong
-             return self.get_state(), reward, self.done
+        # --- Handle Build Actions (if action is not STOP) ---
+        if action < self.num_build_actions:
+            total_features = len(self.features)
+            total_constants = len(self.constants)
 
-        if self.tree is None:
-            # First step: Must start with a feature or constant
-            if action < total_features:
-                self.tree = self.features[action]
-                op_applied = True
-            elif action < total_features + total_constants:
-                self.tree = str(self.constants[action - total_features])
-                op_applied = True
-            else: # Invalid first action (operator)
-                reward = -0.15 # Penalty for invalid first action
-                # Fallback: randomly start with a feature
-                self.tree = np.random.choice(self.features)
-                op_applied = True # We forced a start
-        else:
-            # Subsequent steps: Combine or apply operator
-            if action < total_features: # Combine with feature using binary op
-                feature = self.features[action]
-                bin_op = np.random.choice(['+', '-', '*', 'safe_div']) # Use safe_div directly
-                if np.random.random() < 0.5:
-                    self.tree = f"({self.tree} {bin_op} {feature})"
-                else:
-                    self.tree = f"({feature} {bin_op} {self.tree})"
-                self.operations_count += 1
-                op_applied = True
-            elif action < total_features + total_constants: # Combine with constant using binary op
-                constant_str = str(self.constants[action - total_features])
-                bin_op = np.random.choice(['+', '-', '*', 'safe_div'])
-                if np.random.random() < 0.5:
-                    self.tree = f"({self.tree} {bin_op} {constant_str})"
-                else:
-                    self.tree = f"({constant_str} {bin_op} {self.tree})"
-                self.operations_count += 1
-                op_applied = True
-            else: # Apply an operator
-                op_idx = action - (total_features + total_constants)
-                operator_symbol = self.operators[op_idx]
+            if self.tree is None:
+                # First step: Must start with a feature or constant
+                if action < total_features:
+                    self.tree = self.features[action]
+                    op_applied = True
+                elif action < total_features + total_constants:
+                    self.tree = str(self.constants[action - total_features])
+                    op_applied = True
+                else: # Invalid first action (operator)
+                    reward = -0.15 # Small penalty
+                    self.tree = np.random.choice(self.features) # Fallback
+                    op_applied = True
+            else:
+                # Subsequent build steps (logic simplified slightly from previous version for clarity)
+                current_action_type = None
+                if action < total_features: current_action_type = 'feature'
+                elif action < total_features + total_constants: current_action_type = 'constant'
+                else: current_action_type = 'operator'
 
-                # Map operator symbols to safe function names or numpy functions
-                op_map = {
-                    'log': 'safe_log', 'exp': 'safe_exp', 'sqrt': 'safe_sqrt',
-                    'abs': 'np.abs', '**2': 'safe_power2',
-                    '+': '+', '-': '-', '*': '*', '/': 'safe_div' # Binary ops handled below
-                }
-
-                if operator_symbol in ['log', 'exp', 'sqrt', 'abs', '**2']:
-                    safe_op_name = op_map[operator_symbol]
-                    self.tree = f"{safe_op_name}({self.tree})"
+                if current_action_type == 'feature':
+                    feature = self.features[action]
+                    bin_op = np.random.choice(['+', '-', '*', 'safe_div'])
+                    self.tree = f"({self.tree} {bin_op} {feature})" # Simplified structure slightly
                     self.operations_count += 1
                     op_applied = True
-                elif operator_symbol in ['+', '-', '*', '/']:
-                    # Apply binary operator by adding a *new* random operand
-                    safe_op_name = op_map[operator_symbol]
-                    if np.random.random() < 0.5: # Add constant
-                        operand = str(np.random.choice(self.constants))
-                    else: # Add feature
-                        operand = np.random.choice(self.features)
-
-                    if np.random.random() < 0.5:
-                        self.tree = f"({self.tree} {safe_op_name} {operand})"
-                    else:
-                        self.tree = f"({operand} {safe_op_name} {self.tree})"
-                    self.operations_count += 2 # Binary op adds complexity
+                elif current_action_type == 'constant':
+                    constant_str = str(self.constants[action - total_features])
+                    bin_op = np.random.choice(['+', '-', '*', 'safe_div'])
+                    self.tree = f"({self.tree} {bin_op} {constant_str})" # Simplified structure slightly
+                    self.operations_count += 1
                     op_applied = True
-                else:
-                    # Should not happen if config lists are correct
-                    warnings.warn(f"Unhandled operator symbol: {operator_symbol}")
-                    reward = -0.1
+                elif current_action_type == 'operator':
+                    op_idx = action - (total_features + total_constants)
+                    operator_symbol = self.operators[op_idx]
+                    op_map = { # Re-define map for clarity
+                        'log': 'safe_log', 'exp': 'safe_exp', 'sqrt': 'safe_sqrt',
+                        'abs': 'np.abs', '**2': 'safe_power2',
+                        '+': '+', '-': '-', '*': '*', '/': 'safe_div'
+                    }
+                    if operator_symbol in ['log', 'exp', 'sqrt', 'abs', '**2']:
+                        safe_op_name = op_map[operator_symbol]
+                        self.tree = f"{safe_op_name}({self.tree})"
+                        self.operations_count += 1
+                        op_applied = True
+                    elif operator_symbol in ['+', '-', '*', '/']:
+                        safe_op_name = op_map[operator_symbol]
+                        operand = str(np.random.choice(self.constants)) if np.random.rand() < 0.5 else np.random.choice(self.features)
+                        self.tree = f"({self.tree} {safe_op_name} {operand})" # Simplified structure slightly
+                        self.operations_count += 2
+                        op_applied = True
+        else:
+            # Invalid action index (shouldn't happen if action_dim is correct)
+            warnings.warn(f"Invalid action index received in step: {action}")
+            reward = -0.2
+            self.done = True # Terminate on invalid action
+            return self.get_state(), float(reward), self.done
 
-        # Update depth if an operation was successfully applied
+        # Update depth if a build operation was applied
         if op_applied:
             self.current_depth += 1
 
-        # Check termination conditions
-        if self.current_depth >= self.max_depth or self.operations_count >= self.max_operations:
-            self.done = True
+        # --- Check Termination by Fixed Limits (Safety Net) ---
+        if not self.done: # Only check if not already done by STOP action
+            if self.current_depth >= self.max_depth or self.operations_count >= self.max_operations:
+                reward = self._calculate_final_reward() # Calculate reward as limits are hit
+                self.done = True
 
-        # --- Calculate final reward if done ---
-        if self.done:
-            final_reward = self._calculate_final_reward()
-            reward = final_reward # Override intermediate reward
-
-        # Ensure reward is a scalar float
+        # --- Return state, reward, done ---
+        # Ensure reward is float for consistency
         reward = float(reward) if isinstance(reward, (float, int, np.number)) else -1.0
-
         return self.get_state(), reward, self.done
 
     def _calculate_final_reward(self):
-        """Calculates the reward based on the finished expression tree."""
+        # ... (This method remains the same as before) ...
+        # Calculates reward based on self.tree and self.data
+        # Returns a float reward value or penalty
         try:
             factor_values = self.evaluate_tree()
 
             if factor_values is None or not isinstance(factor_values, np.ndarray):
                 return -1.0 # Penalty for evaluation failure
 
-            # Use pre-calculated numpy returns for efficiency
             returns = self.returns_np
-
-            # Align and clean data (handle NaNs/Infs)
             valid_mask = np.isfinite(factor_values) & np.isfinite(returns)
             if valid_mask.sum() < EVAL_MIN_POINTS: # Check if enough valid points
                 return -0.7 # Penalty for insufficient valid data
@@ -173,27 +164,23 @@ class FactorEnv:
             valid_factors = factor_values[valid_mask]
             valid_returns = returns[valid_mask]
 
-            # Winsorize factor values (on valid data only)
             lower_bound = np.percentile(valid_factors, 1)
             upper_bound = np.percentile(valid_factors, 99)
             clipped_factors = np.clip(valid_factors, lower_bound, upper_bound)
 
-            # Check for sufficient variability
             if np.std(clipped_factors) < 1e-7:
                 return -0.6 # Penalize constant-like factors
 
-            # Calculate Spearman correlation
             corr, p_value = spearmanr(clipped_factors, valid_returns)
 
             if np.isnan(corr):
                 return -0.5 # Penalize if correlation is NaN
 
-            # Base reward is absolute correlation
+            # --- Incorporate Complexity Penalty Here (Optional) ---
             reward = abs(corr)
-
-            # Optional: Complexity Penalty (simple example)
-            # complexity_penalty = 0.005 * self.operations_count
+            # complexity_penalty = config.COMPLEXITY_COEF * self.operations_count # Assumes COMPLEXITY_COEF in config
             # reward = max(0, reward - complexity_penalty)
+            # ---
 
             return reward
 
