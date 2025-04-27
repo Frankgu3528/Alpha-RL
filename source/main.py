@@ -162,10 +162,13 @@ def run_training():
                     stats = evaluate_factor_on_split(tree, data_split)
                     results[split_name] = stats
                     print(f"  - {split_name} Eval: ", end="")
+                    # 在评估结果输出部分
                     if stats and stats.get('error') is None:
-                         print(f"Spearman IC: {stats['spearman_ic']:.4f} (p={stats['p_spearman']:.3f}), "
-                               f"Pearson: {stats['pearson_corr']:.4f}, Std: {stats['factor_std']:.3g}, "
-                               f"Valid Points: {stats['valid_points']}")
+                        print(f"Spearman IC: {stats['spearman_ic']:.4f} "
+                              f"(p={stats.get('p_spearman', 'N/A'):.3f}), "
+                              f"Pearson: {stats['pearson_corr']:.4f}, "
+                              f"Std: {stats['factor_std']:.3g}, "
+                              f"Valid Points: {stats['valid_points']}")
                     elif stats:
                          print(f"Evaluation failed ({stats.get('error', 'Unknown error')}). Valid points: {stats.get('valid_points', 'N/A')}")
                     else:
@@ -182,19 +185,33 @@ def run_training():
             })
 
         # --- Print Summary Table ---
-        print("\n--- Evaluation Summary Table (Spearman IC) ---")
-        print("-" * 80)
-        print(f"{'Rank':<5} | {'Train IC':<10} | {'Val IC':<10} | {'Test IC':<10} | {'Factor Expression (truncated)'}")
-        print("-" * 80)
+        print("\n--- Evaluation Summary Table (IC & Returns) ---")
+        print("-" * 120)
+        print(f"{'Rank':<5} | {'Train IC':<10} | {'Val IC':<10} | {'Test IC':<10} | "
+              f"{'L/S Ret(%)':<10} | {'Top Ret(%)':<10} | {'Bot Ret(%)':<10} | {'Expression'}")
+        print("-" * 120)
         for result in evaluation_results:
-             # Safely access nested dictionary keys
-             train_ic_str = f"{result['train_eval']['spearman_ic']:.4f}" if result.get('train_eval') and result['train_eval'].get('error') is None else " N/A "
-             val_ic_str = f"{result['val_eval']['spearman_ic']:.4f}" if result.get('val_eval') and result['val_eval'].get('error') is None else " N/A "
-             test_ic_str = f"{result['test_eval']['spearman_ic']:.4f}" if result.get('test_eval') and result['test_eval'].get('error') is None else " N/A "
-             tree_str = result['tree']
-             tree_display = (tree_str[:45] + '...') if len(tree_str) > 48 else tree_str
-             print(f"{result['rank']:<5} | {train_ic_str:<10} | {val_ic_str:<10} | {test_ic_str:<10} | {tree_display}")
-        print("-" * 80)
+            # 获取各项指标
+            train_stats = result.get('train_eval', {})
+            val_stats = result.get('val_eval', {})
+            test_stats = result.get('test_eval', {})
+            
+            # 格式化输出
+            train_ic = f"{train_stats.get('spearman_ic', 'N/A'):.4f}" if train_stats and not train_stats.get('error') else "N/A"
+            val_ic = f"{val_stats.get('spearman_ic', 'N/A'):.4f}" if val_stats and not val_stats.get('error') else "N/A"
+            test_ic = f"{test_stats.get('spearman_ic', 'N/A'):.4f}" if test_stats and not test_stats.get('error') else "N/A"
+            
+            # 收益率指标 (使用测试集的结果)
+            ls_ret = f"{test_stats.get('long_short_return', 'N/A')*100:.2f}" if test_stats and not test_stats.get('error') else "N/A"
+            top_ret = f"{test_stats.get('top_group_return', 'N/A')*100:.2f}" if test_stats and not test_stats.get('error') else "N/A"
+            bot_ret = f"{test_stats.get('bottom_group_return', 'N/A')*100:.2f}" if test_stats and not test_stats.get('error') else "N/A"
+            
+            tree_str = result['tree']
+            tree_display = (tree_str[:40] + '...') if len(tree_str) > 43 else tree_str
+            
+            print(f"{result['rank']:<5} | {train_ic:<10} | {val_ic:<10} | {test_ic:<10} | "
+                  f"{ls_ret:<10} | {top_ret:<10} | {bot_ret:<10} | {tree_display}")
+        print("-" * 120)
 
 
     total_duration = time.time() - start_time

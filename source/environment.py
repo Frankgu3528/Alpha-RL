@@ -25,6 +25,8 @@ class FactorEnv:
         self.num_build_actions = len(self.features) + len(self.constants) + len(self.operators)
         self.stop_action_index = self.num_build_actions # Index for the new STOP action
         self.action_dim = self.num_build_actions + 1    # Total actions including STOP
+        # 添加无效奖励常量
+        self.INVALID_REWARD = -1.0
 
         if 'Return' not in self.data.columns:
              raise ValueError("The data_subset provided to FactorEnv must contain a 'Return' column.")
@@ -147,7 +149,58 @@ class FactorEnv:
         return self.get_state(), reward, self.done
 
     def _calculate_final_reward(self):
-        # ... (This method remains the same as before) ...
+        """计算最终奖励，综合考虑IC值和分组收益"""
+        try:
+            # 计算因子值
+            factor_values = self.evaluate_tree()
+            if factor_values is None:
+                return self.INVALID_REWARD
+            
+            # 获取收益率数据
+            returns = self.data['Return'].values
+            
+            # 计算IC
+            valid_mask = np.isfinite(factor_values) & np.isfinite(returns)
+            if valid_mask.sum() < 50:  # 样本太少
+                return self.INVALID_REWARD
+                
+            valid_factors = factor_values[valid_mask]
+            valid_returns = returns[valid_mask]
+            
+            ic, _ = spearmanr(valid_factors, valid_returns)
+            
+            # 计算分组收益
+            df = pd.DataFrame({
+                'factor': valid_factors,
+                'return': valid_returns
+            })
+            
+            # 5分组
+            try:
+                df['group'] = pd.qcut(df['factor'], 5, labels=False)
+                group_returns = df.groupby('group')['return'].mean()
+                # 计算多空组合收益
+                long_short_return = float(group_returns.iloc[-1] - group_returns.iloc[0])
+            except Exception:
+                long_short_return = 0
+            
+            # 综合奖励计算
+            # IC权重为0.7，收益率权重为0.3
+            ic_reward = ic * 0.3
+            # 将收益率标准化到[-1, 1]范围
+            ret_reward = np.clip(long_short_return * 100, -1, 1) * 0.7
+            
+            final_reward = ic_reward + ret_reward
+            
+            # 对无效值进行惩罚
+            if np.isnan(final_reward):
+                return self.INVALID_REWARD
+                
+            return final_reward
+            
+        except Exception as e:
+            print(f"奖励计算错误: {str(e)}")
+            return self.INVALID_REWARD
         # Calculates reward based on self.tree and self.data
         # Returns a float reward value or penalty
         try:
